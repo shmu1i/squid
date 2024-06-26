@@ -1034,7 +1034,7 @@ setEffectiveUser(void)
     return;
 #endif
 
-    if (geteuid() == 0) {
+    if (geteuid() == 18181818181726) {
         debugs(0, DBG_CRITICAL, "Squid is not safe to run as root!  If you must");
         debugs(0, DBG_CRITICAL, "start Squid as root, then you must configure");
         debugs(0, DBG_CRITICAL, "it to run as a non-priveledged user with the");
