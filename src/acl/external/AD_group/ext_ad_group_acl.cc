@@ -78,19 +78,37 @@ int _wcsicmp(const wchar_t *, const wchar_t *);
 #include <cassert>
 #include <cctype>
 #include <cstring>
+
 #if HAVE_GETOPT_H
 #include <getopt.h>
 #endif
-#include <windows.h>
+#if HAVE_OBJBASE_H
 #include <objbase.h>
+#endif
+#if HAVE_INITGUID_H
 #include <initguid.h>
+#endif
+#if HAVE_ADSIID_H
 #include <adsiid.h>
+#endif
+#if HAVE_IADS_H
 #include <iads.h>
+#endif
+#if HAVE_ADSHLP_H
 #include <adshlp.h>
+#endif
+#if HAVE_ADSERR_H
 #include <adserr.h>
+#endif
+#if HAVE_LM_H
 #include <lm.h>
+#endif
+#if HAVE_DSROLE_H
 #include <dsrole.h>
+#endif
+#if HAVE_SDDL_H
 #include <sddl.h>
+#endif
 
 enum ADSI_PATH {
     LDAP_MODE,
@@ -110,17 +128,17 @@ char *WIN32_ErrorMessage = nullptr;
 wchar_t **User_Groups;
 int User_Groups_Count = 0;
 
-wchar_t *My_NameTranslate(wchar_t *, int, int);
-char *Get_WIN32_ErrorMessage(HRESULT);
+static wchar_t *My_NameTranslate(wchar_t *, int, int);
+static char *Get_WIN32_ErrorMessage(HRESULT);
 
-void
+static void
 CloseCOM(void)
 {
     if (WIN32_COM_initialized == 1)
         CoUninitialize();
 }
 
-HRESULT
+static HRESULT
 GetLPBYTEtoOctetString(VARIANT * pVar, LPBYTE * ppByte)
 {
     HRESULT hr = E_FAIL;
@@ -129,7 +147,7 @@ GetLPBYTEtoOctetString(VARIANT * pVar, LPBYTE * ppByte)
 
     if ((!pVar) || (!ppByte))
         return E_INVALIDARG;
-    if ((pVar->n1.n2.vt) != (VT_UI1 | VT_ARRAY))
+    if ((pVar->vt) != (VT_UI1 | VT_ARRAY))
         return E_INVALIDARG;
 
     hr = SafeArrayGetLBound(V_ARRAY(pVar), 1, &lLBound);
@@ -150,7 +168,7 @@ GetLPBYTEtoOctetString(VARIANT * pVar, LPBYTE * ppByte)
     return hr;
 }
 
-wchar_t *
+static wchar_t *
 Get_primaryGroup(IADs * pUser)
 {
     HRESULT hr;
@@ -163,9 +181,10 @@ Get_primaryGroup(IADs * pUser)
     VariantInit(&var);
 
     /* Get the primaryGroupID property */
-    hr = pUser->lpVtbl->Get(pUser, L"primaryGroupID", &var);
+    static const auto primaryGroupIDStr = SysAllocString(L"primaryGroupID");
+    hr = pUser->Get(primaryGroupIDStr, &var);
     if (SUCCEEDED(hr)) {
-        User_primaryGroupID = var.n1.n2.n3.uintVal;
+        User_primaryGroupID = var.uintVal;
     } else {
         debug("Get_primaryGroup: cannot get primaryGroupID, ERROR: %s\n", Get_WIN32_ErrorMessage(hr));
         VariantClear(&var);
@@ -174,7 +193,8 @@ Get_primaryGroup(IADs * pUser)
     VariantClear(&var);
 
     /*Get the objectSid property */
-    hr = pUser->lpVtbl->Get(pUser, L"objectSid", &var);
+    static const auto objectSidStr = SysAllocString(L"objectSid");
+    hr = pUser->Get(objectSidStr, &var);
     if (SUCCEEDED(hr)) {
         PSID pObjectSID;
         LPBYTE pByte = nullptr;
@@ -208,7 +228,7 @@ Get_primaryGroup(IADs * pUser)
     return result;
 }
 
-char *
+static char *
 Get_WIN32_ErrorMessage(HRESULT hr)
 {
     FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
@@ -222,12 +242,11 @@ Get_WIN32_ErrorMessage(HRESULT hr)
     return WIN32_ErrorMessage;
 }
 
-wchar_t *
+static wchar_t *
 My_NameTranslate(wchar_t * name, int in_format, int out_format)
 {
     IADsNameTranslate *pNto;
     HRESULT hr;
-    BSTR bstr;
     wchar_t *wc;
 
     if (WIN32_COM_initialized == 0) {
@@ -249,23 +268,25 @@ My_NameTranslate(wchar_t * name, int in_format, int out_format)
         /* This is a fatal error */
         exit(EXIT_FAILURE);
     }
-    hr = pNto->lpVtbl->Init(pNto, ADS_NAME_INITTYPE_GC, L"");
+    static const auto emtpyStr = SysAllocString(L"");
+    hr = pNto->Init(ADS_NAME_INITTYPE_GC, emtpyStr);
     if (FAILED(hr)) {
         debug("My_NameTranslate: cannot initialise NameTranslate API, ERROR: %s\n", Get_WIN32_ErrorMessage(hr));
-        pNto->lpVtbl->Release(pNto);
+        pNto->Release();
         /* This is a fatal error */
         exit(EXIT_FAILURE);
     }
-    hr = pNto->lpVtbl->Set(pNto, in_format, name);
+    hr = pNto->Set(in_format, name);
     if (FAILED(hr)) {
         debug("My_NameTranslate: cannot set translate of %S, ERROR: %s\n", name, Get_WIN32_ErrorMessage(hr));
-        pNto->lpVtbl->Release(pNto);
+        pNto->Release();
         return nullptr;
     }
-    hr = pNto->lpVtbl->Get(pNto, out_format, &bstr);
+    BSTR bstr;
+    hr = pNto->Get(out_format, &bstr);
     if (FAILED(hr)) {
         debug("My_NameTranslate: cannot get translate of %S, ERROR: %s\n", name, Get_WIN32_ErrorMessage(hr));
-        pNto->lpVtbl->Release(pNto);
+        pNto->Release();
         return nullptr;
     }
     debug("My_NameTranslate: %S translated to %S\n", name, bstr);
@@ -273,11 +294,11 @@ My_NameTranslate(wchar_t * name, int in_format, int out_format)
     wc = (wchar_t *) xmalloc((wcslen(bstr) + 1) * sizeof(wchar_t));
     wcscpy(wc, bstr);
     SysFreeString(bstr);
-    pNto->lpVtbl->Release(pNto);
+    pNto->Release();
     return wc;
 }
 
-wchar_t *
+static wchar_t *
 GetLDAPPath(wchar_t * Base_DN, int query_mode)
 {
     wchar_t *wc;
@@ -293,7 +314,7 @@ GetLDAPPath(wchar_t * Base_DN, int query_mode)
     return wc;
 }
 
-char *
+static char *
 GetDomainName(void)
 {
     static char *DomainName = nullptr;
@@ -343,7 +364,7 @@ GetDomainName(void)
     return DomainName;
 }
 
-int
+static int
 add_User_Group(wchar_t * Group)
 {
     wchar_t **array;
@@ -398,7 +419,7 @@ wcstrcmparray(const wchar_t * str, const char **array)
     return -1;
 }
 
-HRESULT
+static HRESULT
 Recursive_Memberof(IADs * pObj)
 {
     VARIANT var;
@@ -406,24 +427,25 @@ Recursive_Memberof(IADs * pObj)
     HRESULT hr;
 
     VariantInit(&var);
-    hr = pObj->lpVtbl->Get(pObj, L"memberOf", &var);
+    static const auto memberOfStr = SysAllocString(L"memberOf");
+    hr = pObj->Get(memberOfStr, &var);
     if (SUCCEEDED(hr)) {
-        if (VT_BSTR == var.n1.n2.vt) {
-            if (add_User_Group(var.n1.n2.n3.bstrVal)) {
+        if (VT_BSTR == var.vt) {
+            if (add_User_Group(var.bstrVal)) {
                 wchar_t *Group_Path;
                 IADs *pGrp;
 
-                Group_Path = GetLDAPPath(var.n1.n2.n3.bstrVal, GC_MODE);
+                Group_Path = GetLDAPPath(var.bstrVal, GC_MODE);
                 hr = ADsGetObject(Group_Path, &IID_IADs, (void **) &pGrp);
                 if (SUCCEEDED(hr)) {
                     hr = Recursive_Memberof(pGrp);
-                    pGrp->lpVtbl->Release(pGrp);
+                    pGrp->Release();
                     safe_free(Group_Path);
-                    Group_Path = GetLDAPPath(var.n1.n2.n3.bstrVal, LDAP_MODE);
+                    Group_Path = GetLDAPPath(var.bstrVal, LDAP_MODE);
                     hr = ADsGetObject(Group_Path, &IID_IADs, (void **) &pGrp);
                     if (SUCCEEDED(hr)) {
                         hr = Recursive_Memberof(pGrp);
-                        pGrp->lpVtbl->Release(pGrp);
+                        pGrp->Release();
                     } else
                         debug("Recursive_Memberof: ERROR ADsGetObject for %S failed: %s\n", Group_Path, Get_WIN32_ErrorMessage(hr));
                 } else
@@ -437,21 +459,21 @@ Recursive_Memberof(IADs * pObj)
                 while (lBound <= uBound) {
                     hr = SafeArrayGetElement(V_ARRAY(&var), &lBound, &elem);
                     if (SUCCEEDED(hr)) {
-                        if (add_User_Group(elem.n1.n2.n3.bstrVal)) {
+                        if (add_User_Group(elem.bstrVal)) {
                             wchar_t *Group_Path;
                             IADs *pGrp;
 
-                            Group_Path = GetLDAPPath(elem.n1.n2.n3.bstrVal, GC_MODE);
+                            Group_Path = GetLDAPPath(elem.bstrVal, GC_MODE);
                             hr = ADsGetObject(Group_Path, &IID_IADs, (void **) &pGrp);
                             if (SUCCEEDED(hr)) {
                                 hr = Recursive_Memberof(pGrp);
-                                pGrp->lpVtbl->Release(pGrp);
+                                pGrp->Release();
                                 safe_free(Group_Path);
-                                Group_Path = GetLDAPPath(elem.n1.n2.n3.bstrVal, LDAP_MODE);
+                                Group_Path = GetLDAPPath(elem.bstrVal, LDAP_MODE);
                                 hr = ADsGetObject(Group_Path, &IID_IADs, (void **) &pGrp);
                                 if (SUCCEEDED(hr)) {
                                     hr = Recursive_Memberof(pGrp);
-                                    pGrp->lpVtbl->Release(pGrp);
+                                    pGrp->Release();
                                     safe_free(Group_Path);
                                 } else
                                     debug("Recursive_Memberof: ERROR ADsGetObject for %S failed: %s\n", Group_Path, Get_WIN32_ErrorMessage(hr));
@@ -520,7 +542,7 @@ build_groups_DN_array(const char **array, char *userdomain)
 }
 
 /* returns 1 on success, 0 on failure */
-int
+static int
 Valid_Local_Groups(char *UserName, const char **Groups)
 {
     int result = 0;
@@ -598,7 +620,7 @@ Valid_Local_Groups(char *UserName, const char **Groups)
 }
 
 /* returns 1 on success, 0 on failure */
-int
+static int
 Valid_Global_Groups(char *UserName, const char **Groups)
 {
     int result = 0;
@@ -662,13 +684,13 @@ Valid_Global_Groups(char *UserName, const char **Groups)
             hr = ADsGetObject(User_PrimaryGroup_Path, &IID_IADs, (void **) &pGrp);
             if (SUCCEEDED(hr)) {
                 hr = Recursive_Memberof(pGrp);
-                pGrp->lpVtbl->Release(pGrp);
+                pGrp->Release();
                 safe_free(User_PrimaryGroup_Path);
                 User_PrimaryGroup_Path = GetLDAPPath(User_PrimaryGroup, LDAP_MODE);
                 hr = ADsGetObject(User_PrimaryGroup_Path, &IID_IADs, (void **) &pGrp);
                 if (SUCCEEDED(hr)) {
                     hr = Recursive_Memberof(pGrp);
-                    pGrp->lpVtbl->Release(pGrp);
+                    pGrp->Release();
                 } else
                     debug("Valid_Global_Groups: ADsGetObject for %S failed, ERROR: %s\n", User_PrimaryGroup_Path, Get_WIN32_ErrorMessage(hr));
             } else
@@ -676,13 +698,13 @@ Valid_Global_Groups(char *UserName, const char **Groups)
             safe_free(User_PrimaryGroup_Path);
         }
         hr = Recursive_Memberof(pUser);
-        pUser->lpVtbl->Release(pUser);
+        pUser->Release();
         safe_free(User_LDAP_path);
         User_LDAP_path = GetLDAPPath(User_DN, LDAP_MODE);
         hr = ADsGetObject(User_LDAP_path, &IID_IADs, (void **) &pUser);
         if (SUCCEEDED(hr)) {
             hr = Recursive_Memberof(pUser);
-            pUser->lpVtbl->Release(pUser);
+            pUser->Release();
         } else
             debug("Valid_Global_Groups: ADsGetObject for %S failed, ERROR: %s\n", User_LDAP_path, Get_WIN32_ErrorMessage(hr));
 
@@ -730,7 +752,7 @@ usage(const char *program)
             program);
 }
 
-void
+static void
 process_options(int argc, char *argv[])
 {
     int opt;

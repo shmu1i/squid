@@ -59,6 +59,7 @@
 
 #include "squid.h"
 #include "acl/FilledChecklist.h"
+#include "anyp/Host.h"
 #include "anyp/PortCfg.h"
 #include "base/AsyncCallbacks.h"
 #include "base/Subscription.h"
@@ -1470,9 +1471,13 @@ bool ConnStateData::serveDelayedError(Http::Stream *context)
     // when we can extract the intended name from the bumped HTTP request.
     if (const Security::CertPointer &srvCert = sslServerBump->serverCert) {
         HttpRequest *request = http->request;
-        if (!Ssl::checkX509ServerValidity(srvCert.get(), request->url.host())) {
+        const auto host = request->url.parsedHost();
+        if (host && Ssl::HasSubjectName(*srvCert, *host)) {
+            debugs(33, 5, "certificate matches requested host: " << *host);
+            return false;
+        } else {
             debugs(33, 2, "SQUID_X509_V_ERR_DOMAIN_MISMATCH: Certificate " <<
-                   "does not match domainname " << request->url.host());
+                   "does not match request target " << RawPointer(host));
 
             bool allowDomainMismatch = false;
             if (Config.ssl_client.cert_error) {
@@ -1528,7 +1533,7 @@ ConnStateData::tunnelOnError(const err_type requestError)
     ACLFilledChecklist checklist(Config.accessList.on_unsupported_protocol, nullptr);
     checklist.requestErrorType = requestError;
     fillChecklist(checklist);
-    auto answer = checklist.fastCheck();
+    const auto &answer = checklist.fastCheck();
     if (answer.allowed() && answer.kind == 1) {
         debugs(33, 3, "Request will be tunneled to server");
         const auto context = pipeline.front();
@@ -1957,7 +1962,7 @@ ConnStateData::handleRequestBodyData()
         }
     } else { // identity encoding
         debugs(33,5, "handling plain request body for " << clientConnection);
-        const size_t putSize = bodyPipe->putMoreData(inBuf.c_str(), inBuf.length());
+        const auto putSize = bodyPipe->putMoreData(inBuf.rawContent(), inBuf.length());
         if (putSize > 0)
             consumeInput(putSize);
 
@@ -2184,7 +2189,7 @@ ConnStateData::whenClientIpKnown()
             /* pools require explicit 'allow' to assign a client into them */
             if (pools[pool]->access) {
                 ch.changeAcl(pools[pool]->access);
-                auto answer = ch.fastCheck();
+                const auto &answer = ch.fastCheck();
                 if (answer.allowed()) {
 
                     /*  request client information from db after we did all checks
@@ -2288,8 +2293,8 @@ clientNegotiateSSL(int fd, void *data)
         return;
 
     case Security::IoResult::ioError:
-        debugs(83, (handshakeResult.important ? Important(62) : 2), "ERROR: " << handshakeResult.errorDescription <<
-               " while accepting a TLS connection on " << conn->clientConnection << ": " << handshakeResult.errorDetail);
+        debugs(83, (handshakeResult.important ? Important(62) : 2), "ERROR: Cannot accept a TLS connection" <<
+               Debug::Extra << "problem: " << WithExtras(handshakeResult));
         // TODO: No ConnStateData::tunnelOnError() on this forward-proxy code
         // path because we cannot know the intended connection target?
         conn->updateError(ERR_SECURE_ACCEPT_FAIL, handshakeResult.errorDetail);
@@ -2484,7 +2489,7 @@ ConnStateData::postHttpsAccept()
         CodeContext::Reset(connectAle);
         // TODO: Use these request/ALE when waiting for new bumped transactions.
 
-        const auto acl_checklist = new ACLFilledChecklist(Config.accessList.ssl_bump, request);
+        auto acl_checklist = ACLFilledChecklist::Make(Config.accessList.ssl_bump, request);
         fillChecklist(*acl_checklist);
         // Build a local AccessLogEntry to allow requiresAle() acls work
         acl_checklist->al = connectAle;
@@ -2501,7 +2506,7 @@ ConnStateData::postHttpsAccept()
         ClientHttpRequest *http = context ? context->http : nullptr;
         const char *log_uri = http ? http->log_uri : nullptr;
         acl_checklist->syncAle(request, log_uri);
-        acl_checklist->nonBlockingCheck(httpsSslBumpAccessCheckDone, this);
+        ACLFilledChecklist::NonBlockingCheck(std::move(acl_checklist), httpsSslBumpAccessCheckDone, this);
 #else
         fatal("FATAL: SSL-Bump requires --with-openssl");
 #endif
@@ -2642,7 +2647,7 @@ Security::ContextPointer
 ConnStateData::getTlsContextFromCache(const SBuf &cacheKey, const Ssl::CertificateProperties &certProperties)
 {
     debugs(33, 5, "Finding SSL certificate for " << cacheKey << " in cache");
-    Ssl::LocalContextStorage * ssl_ctx_cache = Ssl::TheGlobalContextStorage.getLocalStorage(port->s);
+    const auto ssl_ctx_cache = Ssl::TheGlobalContextStorage().getLocalStorage(port->s);
     if (const auto ctx = ssl_ctx_cache ? ssl_ctx_cache->get(cacheKey) : nullptr) {
         if (Ssl::verifySslCertificate(*ctx, certProperties)) {
             debugs(33, 5, "Cached SSL certificate for " << certProperties.commonName << " is valid");
@@ -2659,7 +2664,7 @@ ConnStateData::getTlsContextFromCache(const SBuf &cacheKey, const Ssl::Certifica
 void
 ConnStateData::storeTlsContextToCache(const SBuf &cacheKey, Security::ContextPointer &ctx)
 {
-    Ssl::LocalContextStorage *ssl_ctx_cache = Ssl::TheGlobalContextStorage.getLocalStorage(port->s);
+    const auto ssl_ctx_cache = Ssl::TheGlobalContextStorage().getLocalStorage(port->s);
     if (!ssl_ctx_cache || !ssl_ctx_cache->add(cacheKey, ctx)) {
         // If it is not in storage delete after using. Else storage deleted it.
         fd_table[clientConnection->fd].dynamicTlsContext = ctx;
@@ -2967,12 +2972,12 @@ ConnStateData::startPeekAndSplice()
         sslServerBump->step = XactionStep::tlsBump2;
         // Run a accessList check to check if want to splice or continue bumping
 
-        const auto acl_checklist = new ACLFilledChecklist(Config.accessList.ssl_bump, sslServerBump->request.getRaw());
+        auto acl_checklist = ACLFilledChecklist::Make(Config.accessList.ssl_bump, sslServerBump->request.getRaw());
         acl_checklist->banAction(Acl::Answer(ACCESS_ALLOWED, Ssl::bumpNone));
         acl_checklist->banAction(Acl::Answer(ACCESS_ALLOWED, Ssl::bumpClientFirst));
         acl_checklist->banAction(Acl::Answer(ACCESS_ALLOWED, Ssl::bumpServerFirst));
         fillChecklist(*acl_checklist);
-        acl_checklist->nonBlockingCheck(httpsSslBumpStep2AccessCheckDone, this);
+        ACLFilledChecklist::NonBlockingCheck(std::move(acl_checklist), httpsSslBumpStep2AccessCheckDone, this);
         return;
     }
 
@@ -3036,8 +3041,8 @@ ConnStateData::handleSslBumpHandshakeError(const Security::IoResult &handshakeRe
     }
 
     case Security::IoResult::ioError:
-        debugs(83, (handshakeResult.important ? DBG_IMPORTANT : 2), "ERROR: " << handshakeResult.errorDescription <<
-               " while SslBump-accepting a TLS connection on " << clientConnection << ": " << handshakeResult.errorDetail);
+        debugs(83, (handshakeResult.important ? DBG_IMPORTANT : 2), "ERROR: Cannot SslBump-accept a TLS connection" <<
+               Debug::Extra << "problem: " << WithExtras(handshakeResult));
         updateError(errCategory = ERR_SECURE_ACCEPT_FAIL, handshakeResult.errorDetail);
         break;
 
@@ -3111,7 +3116,7 @@ ConnStateData::initiateTunneledRequest(HttpRequest::Pointer const &cause, const 
         // TLS handshakes on non-bumping https_port. TODO: Discover these
         // problems earlier so that they can be classified/detailed better.
         debugs(33, 2, "Not able to compute URL, abort request tunneling for " << reason);
-        // TODO: throw when nonBlockingCheck() callbacks gain job protections
+        // TODO: throw when NonBlockingCheck() callbacks gain job protections
         static const auto d = MakeNamedErrorDetail("TUNNEL_TARGET");
         updateError(ERR_INVALID_REQ, d);
         return false;
@@ -3263,7 +3268,7 @@ clientHttpConnectionsOpen(void)
             }
             if (s->flags.tunnelSslBumping) {
                 // Create ssl_ctx cache for this port.
-                Ssl::TheGlobalContextStorage.addLocalStorage(s->s, s->secure.dynamicCertMemCacheSize);
+                Ssl::TheGlobalContextStorage().addLocalStorage(s->s, s->secure.dynamicCertMemCacheSize);
             }
         }
 #endif
@@ -3448,10 +3453,10 @@ varyEvaluateMatch(StoreEntry * entry, HttpRequest * request)
     }
 }
 
-ACLFilledChecklist *
+ACLFilledChecklist::MakingPointer
 clientAclChecklistCreate(const acl_access * acl, ClientHttpRequest * http)
 {
-    const auto checklist = new ACLFilledChecklist(acl, nullptr);
+    auto checklist = ACLFilledChecklist::Make(acl, nullptr);
     clientAclChecklistFill(*checklist, http);
     return checklist;
 }

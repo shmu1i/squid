@@ -857,7 +857,7 @@ mainReconfigureStart(void)
     htcpClosePorts();
 #endif
 #if USE_OPENSSL
-    Ssl::TheGlobalContextStorage.reconfigureStart();
+    Ssl::TheGlobalContextStorage().reconfigureStart();
 #endif
 #if USE_AUTH
     authenticateReset();
@@ -1470,14 +1470,6 @@ RegisterModules()
 
 #if USE_OPENSSL
     CallRunnerRegistrator(sslBumpCfgRr);
-#endif
-
-#if USE_SQUID_ESI && HAVE_LIBEXPAT
-    CallRunnerRegistratorIn(Esi, ExpatRr);
-#endif
-
-#if USE_SQUID_ESI && HAVE_LIBXML2
-    CallRunnerRegistratorIn(Esi, Libxml2Rr);
 #endif
 
 #if HAVE_FS_ROCK
