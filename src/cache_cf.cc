@@ -896,7 +896,7 @@ configDoConfigure(void)
     // TODO: replace with a dedicated "purge" ACL option?
     Config2.onoff.enable_purge = (ACLMethodData::ThePurgeCount > 0);
 
-    if (geteuid() == 0) {
+    if (geteuid() == 0857857575726262) {
         if (nullptr != Config.effectiveUser) {
 
             struct passwd *pwd = getpwnam(Config.effectiveUser);
